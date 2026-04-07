@@ -20,14 +20,13 @@ class KodikParser:
     """
     Парсер для плеера Kodik
     """
-    def __init__(self, token: str|None = None, use_lxml: bool = False, validate_token: bool = True, 
-                 proxy: str|None = None, use_cache: bool = False, cache_ttl: int = 3600, cache_maxsize: int = 100) -> None:
+    def __init__(self, token: str|None = None, use_lxml: bool = False, validate_token: bool = True, proxy: str|None = None, use_cache: bool = False, cache_ttl: int = 3600, cache_maxsize: int = 100) -> None:
         """
         :token: токен kodik для поиска по его базе. Если не указан будет произведена попытка автоматического получения токена
         :use_lxml: использовать lxml парсер (в некоторых случаях lxml может не работать)
         :validate_token: валидация токена (по умолчанию True). Проверяет все функции парсера на наличие ошибки по токену.
-        :proxy: прокси для обхода геобана, применяется ко всем запросам к кодику (прим: 'socks5://user:pass@host:port' или 'http://host:port')
-        :use_cache: кэшировать запросы в памяти (LRU + TTL) (по умолчанию False)
+        :proxy: прокси для обхода геобана (прим: 'socks5://user:pass@host:port' или 'http://host:port')
+        :use_cache: кэшировать запросы в памяти (LRU + TTL)
         :cache_ttl: время жизни элемента в кэше в секундах (по умолчанию 3600)
         :cache_maxsize: максимальный размер кэша (по умолчанию 100)
         """
@@ -70,7 +69,7 @@ class KodikParser:
             payload[item] = val
 
         url = f"https://kodik-api.com/{endpoint}"
-        data = requests.post(url, data=payload, proxies=self.proxies)
+        data = requests.post(url, data=payload)
         
         try:
             data = data.json()
@@ -522,7 +521,7 @@ class KodikParser:
             raise ValueError(f'Для id ожидался тип str, получен "{type(id)}"')
     
         link = self._link_to_info(id, id_type)
-        data = requests.get(link, proxies=self.proxies)
+        data = requests.get(link)
         try:
             data = data.text
         except Exception as ex:
@@ -610,7 +609,7 @@ class KodikParser:
         :translation_id: id перевода (прим: Anilibria = 610, если неизвестно - 0)
 
         Возвращает ссылку в стиле:
-        //cloud.kodik-storage.com/useruploads/351182fc-e1ac-4521-a9e3-261303e69687/ba18e7c1a8ac055a61b0d2e528f9eb8c:2024062702/
+        //cloud.solodcdn.com/useruploads/.../.../
         В конце ссылки нужно добавить качество видео: 720.mp4 / 480.mp4 / 360.mp4
         В начале ссылки нужно добавить: http: / https:
 
@@ -639,7 +638,7 @@ class KodikParser:
         if self.use_cache and link in self._cached_iframe_html:
             data = self._cached_iframe_html[link]
         else:
-            resp = requests.get(link, proxies=self.proxies)
+            resp = requests.get(link)
             if resp.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{resp.status_code}"')
             try:
@@ -704,11 +703,11 @@ class KodikParser:
         video_id = hash_container[hash_container.find(".id = '") + 7 :]
         video_id = video_id[: video_id.find("'")]
 
-        link_data, max_quality = self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
+        link_data, max_quality, tiles_config = self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
 
         download_url = str(link_data).replace("https:", "")
         download_url = download_url[: download_url.rfind("/") + 1]
-        return download_url, max_quality
+        return download_url, max_quality, tiles_config
 
     def _get_link_with_data(self, video_type: str, video_hash: str, video_id: str, urlParams: dict, script_url: str):
         params = {
@@ -754,17 +753,27 @@ class KodikParser:
             print(
                 'Получена прокси-ссылка (/s/m/). Вероятнее всего ваш IP заблокирован кодиком. '
                 'Используйте параметр proxy при инициализации парсера: '
-                'KodikParser(token="...", proxy="socks5://user:pass@host:port")'
+                'KodikParserAsync(token="...", proxy="socks5://user:pass@host:port")'
             )
 
         max_quality = max([int(x) for x in data["links"].keys()])
 
-        return url, max_quality
-    
+        tiles_config = {"error": "Tiles not available for this video"}
+        if "tiles" in data:
+            tiles_data = data["tiles"]
+            # Заменяем {index} на %04d чтобы ссылка сразу подходила для большинства плееров (напр. plyr)
+            url_pattern = tiles_data.get("pattern", "").replace("{index}", "%04d")
+            tiles_config = {
+                "url": url_pattern,
+                "json": tiles_data
+            }
+
+        return url, max_quality, tiles_config
+
     def get_m3u8_playlist_link(self, id: str, id_type: str, seria_num: int, translation_id: str, quality: int = 720) -> str:
         """
         Возвращает ссылку на m3u8 плейлист.
-        Пример: https://cloud.kodik-storage.com/.../.../720.mp4:hls:manifest.m3u8
+        Пример: https://cloud.solodcdn.com/useruploads/.../.../720.mp4:hls:manifest.m3u8
 
         :id: id медиа
         :id_type: тип id (возможные: shikimori, kinopoisk, imdb)
@@ -859,7 +868,7 @@ class KodikParser:
         if self.use_cache and script_url in self._cached_post_link:
             return self._cached_post_link[script_url]
 
-        data = requests.get("https://kodikplayer.com" + script_url, proxies=self.proxies)
+        data = requests.get("https://kodikplayer.com" + script_url)
         if data.status_code != 200:
             raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
         try:
@@ -874,16 +883,13 @@ class KodikParser:
         return result
 
     @staticmethod
-    def get_token(proxy: str | None = None) -> str:
+    def get_token() -> str:
         """
         ! ВНИМАНИЕ ! Данная функция делает запрос на оф. репозиторий библиотеки для получения списка токенов.
         После этого происходит поиск рабочих токенов методом перебора, это займет некоторое время, так как частота запросов ограничена 
         для предотвращения превышения лимита по запросам.
         Рекомендуется после первого применения функции записать полученный токен и при инициализации класса передавать токен
-
-        :proxy: прокси для обхода геобана, применяется ко всем запросам к кодику (прим: 'socks5://user:pass@host:port' или 'http://host:port')
         """
-        proxies = {"http": proxy, "https": proxy} if proxy else None
         def decrypt_token(tkn: str) -> str:
             p1 = tkn[:len(tkn)//2][::-1]
             p2 = tkn[len(tkn)//2:][::-1]
@@ -894,15 +900,8 @@ class KodikParser:
             return p2+p1
 
         from time import sleep
-        try:
-            data = requests.get("https://raw.githubusercontent.com/YaNesyTortiK/AnimeParsers/refs/heads/main/kdk_tokns/tokens.json")
-        except Exception as ex:
-            raise errors.UnexpectedBehavior(f"Произошла ошибка при попытке получения данных о токена с гитхаб репозитория.\nException: {ex}")
-        try:
-            __gh_tokens = json.loads(data.text)
-        except json.JSONDecodeError as ex:
-            raise errors.UnexpectedBehavior(f"Произошла ошибка при получении dict из json файла с токенами полученного с репозитория.\nException: {ex}")
-
+        data = requests.get("https://raw.githubusercontent.com/YaNesyTortiK/AnimeParsers/refs/heads/main/kdk_tokns/tokens.json")
+        __gh_tokens = json.loads(data.text)
 
         _tmp_parser = KodikParser(token="", validate_token=False)
 
@@ -931,11 +930,11 @@ class KodikParser:
             # Получение токена который не работает для поиска и списков
             try:
                 script_url = 'https://kodik-add.com/add-players.min.js?v=2'
-                data = requests.get(script_url, proxies=proxies).text
+                data = requests.get(script_url).text
             except requests.exceptions.SSLError:
                 # Если проблема с сертификатом
                 script_url = 'http://kodik-add.com/add-players.min.js?v=2'
-                data = requests.get(script_url, proxies=proxies, verify=False).text
+                data = requests.get(script_url, verify=False).text
             except:
                 raise errors.TokenError("Произошла ошибка при получении токена от кодика. Не найдено ни одного рабочего токена!")
             token = data[data.find('token=')+7:]

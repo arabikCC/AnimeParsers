@@ -29,13 +29,13 @@ class KodikParserAsync:
         :token: токен kodik для поиска по его базе. Если не указан будет произведена попытка автоматического получения токена
         :use_lxml: использовать lxml парсер (в некоторых случаях lxml может не работать)
         :validate_token: валидация токена (по умолчанию False). Для валидации токена воспользуйтесь функцией validate_token
-        :proxy: прокси для обхода геобана, применяется ко всем запросам к кодику (прим: 'socks5://user:pass@host:port' или 'http://host:port')
-        :use_cache: кеширование результатов запросов (LRU + TTL) (по умолчанию False)
+        :proxy: прокси для обхода геобана (прим: 'socks5://user:pass@host:port' или 'http://host:port')
+        :use_cache: кеширование результатов запросов (LRU + TTL)
         :cache_ttl: время жизни элемента в кэше в секундах (по умолчанию 3600)
         :cache_maxsize: максимальный размер кэша (по умолчанию 100)
         """
         if token is None:
-            token = KodikParserAsync.get_token_sync(proxy=proxy) # Попытка получения токена автоматически
+            token = KodikParserAsync.get_token_sync() # Попытка получения токена автоматически
         self.TOKEN = token
         self.proxy = proxy
         self.use_cache = use_cache
@@ -616,7 +616,7 @@ class KodikParserAsync:
         :translation_id: id перевода (прим: Anilibria = 610, если неизвестно - 0)
 
         Возвращает ссылку в стиле:
-        //cloud.kodik-storage.com/useruploads/<uuid>/<hash>:<ts>/
+        //cloud.solodcdn.com/useruploads/<uuid>/<hash>:<ts>/
         В конце ссылки нужно добавить качество: 720.mp4 / 480.mp4 / 360.mp4
         В начале добавить: http: / https:
         """
@@ -701,11 +701,11 @@ class KodikParserAsync:
         video_id = hash_container[hash_container.find('.id = \'')+7:]
         video_id = video_id[:video_id.find('\'')]
 
-        link_data, max_quality = await self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
+        link_data, max_quality, tiles_config = await self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
 
         download_url = str(link_data).replace("https:", "")
         download_url = download_url[: download_url.rfind("/") + 1]
-        return download_url, max_quality
+        return download_url, max_quality, tiles_config
     
     async def _get_link_with_data(self, video_type: str, video_hash: str, video_id: str, urlParams: dict, script_url: str):
         params={
@@ -760,13 +760,22 @@ class KodikParserAsync:
 
         max_quality = max([int(x) for x in data["links"].keys()])
 
-        return url, max_quality
-    
-        
+        tiles_config = {"error": "Tiles not available for this video"}
+        if "tiles" in data:
+            tiles_data = data["tiles"]
+            # Заменяем {index} на %04d чтобы ссылка сразу подходила для большинства плееров (напр. plyr)
+            url_pattern = tiles_data.get("pattern", "").replace("{index}", "%04d")
+            tiles_config = {
+                "url": url_pattern,
+                "json": tiles_data
+            }
+
+        return url, max_quality, tiles_config
+
     async def get_m3u8_playlist_link(self, id: str, id_type: str, seria_num: int, translation_id: str, quality: int = 720) -> str:
         """
         Возвращает ссылку на m3u8 плейлист.
-        Пример: https://cloud.kodik-storage.com/.../.../720.mp4:hls:manifest.m3u8
+        Пример: https://cloud.solodcdn.com/useruploads/.../.../720.mp4:hls:manifest.m3u8
 
         :id: id медиа
         :id_type: тип id (возможные: shikimori, kinopoisk, imdb)
@@ -874,16 +883,14 @@ class KodikParserAsync:
         return result
 
     @staticmethod
-    async def get_token(proxy: str | None = None) -> str:
+    async def get_token() -> str:
         """
         ! ВНИМАНИЕ ! Данная функция делает запрос на оф. репозиторий библиотеки для получения списка токенов.
         После этого происходит поиск рабочих токенов методом перебора, это займет некоторое время, так как частота запросов ограничена 
         для предотвращения превышения лимита по запросам.
         Рекомендуется после первого применения функции записать полученный токен и при инициализации класса передавать токен
-
-        :proxy: прокси для обхода геобана (прим: 'socks5://user:pass@host:port' или 'http://host:port')
         """
-        req = AsyncSession(proxy=proxy)
+        req = AsyncSession()
 
         def decrypt_token(tkn: str) -> str:
             p1 = tkn[:len(tkn)//2][::-1]
@@ -893,25 +900,17 @@ class KodikParserAsync:
             p2 = b64decode(p2.encode('utf-8'))
             p2 = p2.decode('utf-8')
             return p2+p1
-        try:
-            data = await req.get("https://raw.githubusercontent.com/YaNesyTortiK/AnimeParsers/refs/heads/main/kdk_tokns/tokens.json")
-        except Exception as ex:
-            await req.close()
-            raise errors.UnexpectedBehavior(f"Произошла ошибка при попытке получения данных о токена с гитхаб репозитория.\nException: {ex}")
-        try:
-            __gh_tokens = json.loads(data.text)
-        except json.JSONDecodeError as ex:
-            raise errors.UnexpectedBehavior(f"Произошла ошибка при получении dict из json файла с токенами полученного с репозитория.\nException: {ex}")
 
-        _tmp_parser = KodikParserAsync(token="", validate_token=False, proxy=proxy)
+        data = requests.get("https://raw.githubusercontent.com/YaNesyTortiK/AnimeParsers/refs/heads/main/kdk_tokns/tokens.json")
+        __gh_tokens = json.loads(data.text)
+
+        _tmp_parser = KodikParserAsync(token="", validate_token=False)
 
         # Проверка stable
         for token in __gh_tokens['stable']:
             _tmp_parser.TOKEN = decrypt_token(token["tokn"])
             try:
-                if await _tmp_parser.validate_token(print_info=False):
-                    await _tmp_parser.close_async_session()
-                    await req.close()
+                if _tmp_parser.validate_token(print_info=False):
                     return _tmp_parser.TOKEN
             except errors.TokenError:
                 pass
@@ -922,14 +921,11 @@ class KodikParserAsync:
             _tmp_parser.TOKEN = decrypt_token(token["tokn"])
             try:
                 if _tmp_parser.validate_token(print_info=False):
-                    await _tmp_parser.close_async_session()
-                    await req.close()
                     return _tmp_parser.TOKEN
             except errors.TokenError:
                 pass
             await req.sleep(2) # Задержка между проверками
 
-        await _tmp_parser.close_async_session()
         # legacy проверять не имеет смысла, т.к. там все равно не пройдет валидация
         if len(__gh_tokens['legacy']) == 0:
             
@@ -938,27 +934,24 @@ class KodikParserAsync:
                 script_url = 'https://kodik-add.com/add-players.min.js?v=2'
                 data = await req.get(script_url)
             except Exception as ex:
-                await req.close()
                 raise errors.ServiceError(f"\n\n!!! Невозможно получить токен из файлов кодика. Возможно проблема в сертификатах сервера. Воспользуйтесь синхронным вариантом функции.\nException: {ex}")
             token = data[data.find('token=')+7:]
             token = token[:token.find('"')]
             print("[KodikParser] No fully working tokens were found! Using legacy token with restrictions to api functions!")
-            await req.close()
             return token
         else:
             print("[KodikParser] No fully working tokens were found! Using legacy token with restrictions to api functions!")
-            await req.close()
             return decrypt_token(__gh_tokens['legacy'][0]["tokn"])
 
     @staticmethod
-    def get_token_sync(proxy: str | None = None) -> str:
+    def get_token_sync() -> str:
         """
         ! ВНИМАНИЕ ! Данная функция делает запрос на оф. репозиторий библиотеки для получения списка токенов.
         После этого происходит поиск рабочих токенов методом перебора, это займет некоторое время, так как частота запросов ограничена 
         для предотвращения превышения лимита по запросам.
         Рекомендуется после первого применения функции записать полученный токен и при инициализации класса передавать токен
         """
-        return KodikParser.get_token(proxy=proxy)
+        return KodikParser.get_token()
     
     
     async def validate_token(self, print_info: bool = True) -> bool:
@@ -1007,6 +1000,3 @@ class KodikParserAsync:
             return res
         else:
             raise errors.TokenError(f"Для валидации токена он должен быть указан при инициализации или получен автоматически. Текущий токен: {self.TOKEN}")
-        
-    async def close_async_session(self):
-        await self.requests.close()
