@@ -598,7 +598,7 @@ class KodikParser:
         except ValueError:
             return (0, 0)
 
-    def get_link(self, id: str, id_type: str, seria_num: int, translation_id: str) -> tuple[str, int]:
+    def get_link(self, id: str, id_type: str, seria_num: int, translation_id: str) -> tuple[str, int, dict]:
         """
         ### Для использования требуется токен kodik
         Возвращает ссылку на видео файл.
