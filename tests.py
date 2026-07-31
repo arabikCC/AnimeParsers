@@ -72,7 +72,7 @@ if __name__ == "__main__":
     delay = 2
     animego_mirror = "animego.me"
     shiki_mirror = None
-    shiki_proxy = 'http://127.0.0.1:3080'
+    shiki_proxy = testconfig.SHIKI_PROXY
 
     try_errors = 0
     try_success = 0
@@ -83,7 +83,7 @@ if __name__ == "__main__":
     kdk_async()
     kdk_api()
 
-    delay = 10 # Запросов много, плюс шики сильно ограничивает
+    delay = 15 # Запросов много, плюс шики сильно ограничивает
     shiki_sync()
     shiki_async()
 

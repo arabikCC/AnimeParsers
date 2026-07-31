@@ -21,12 +21,17 @@ class ShikimoriParserAsync:
     """
 
     genres_list = ['1-Action', '2-Adventure', '3-Racing', '4-Comedy', '5-Avant-Garde', '6-Mythology', '7-Mystery', '8-Drama', '9-Ecchi', '10-Fantasy', '11-Strategy-Game', '13-Historical', '14-Horror', '15-Kids', '17-Martial-Arts', '18-Mecha', '19-Music', '20-Parody', '21-Samurai', '22-Romance', '23-School', '24-Sci-Fi', '25-Shoujo', '27-Shounen', '29-Space', '30-Sports', '31-Super-Power', '32-Vampire', '35-Harem', '36-Slice-of-Life', '37-Supernatural', '38-Military', '39-Detective', '40-Psychological', '42-Seinen', '43-Josei', '102-Team-Sports', '103-Video-Game', '104-Adult-Cast', '105-Gore', '106-Reincarnation', '107-Love-Polygon', '108-Visual-Arts', '111-Time-Travel', '112-Gag-Humor', '114-Award-Winning', '117-Suspense', '118-Combat-Sports', '119-CGDCT', '124-Mahou-Shoujo', '125-Reverse-Harem', '130-Isekai', '131-Delinquents', '134-Childcare', '135-Magical-Sex-Shift', '136-Showbiz', '137-Otaku-Culture', '138-Organized-Crime', '139-Workplace', '140-Iyashikei', '141-Survival', '142-Performing-Arts', '143-Anthropomorphic', '144-Crossdressing', '145-Idols-(Female)', '146-High-Stakes-Game', '147-Medical', '148-Pets', '149-Educational', '150-Idols-(Male)', '151-Romantic-Subtext', '543-Gourmet']
+    genres_list_ru = ['Экшен', 'Приключения', 'Гонки', 'Комедия', 'Авангард', 'Мифология', 'Тайна', 'Драма', 'Этти', 'Фэнтези', 'Стратегические игры', 'Исторический', 'Ужасы', 'Детское', 'Боевые искусства', 'Меха', 'Музыка', 'Пародия', 'Самураи', 'Романтика', 'Школа', 'Фантастика', 'Сёдзё', 'Сёнен', 'Космос', 'Спорт', 'Супер сила', 'Вампиры', 'Гарем', 'Повседневность', 'Сверхъестественное', 'Военное', 'Детектив', 'Психологическое', 'Сэйнэн', 'Дзёсей', 'Командный спорт', 'Видеоигры', 'Взрослые персонажи', 'Жестокость', 'Реинкарнация', 'Любовный многоугольник', 'Изобразительное искусство', 'Путешествие во времени', 'Гэг-юмор', 'Удостоено наград', 'Триллер', 'Спортивные единоборства', 'CGDCT', 'Махо-сёдзё', 'Реверс-гарем', 'Исэкай', 'Хулиганы', 'Забота о детях', 'Магическая смена пола', 'Шоу-бизнес', 'Культура отаку',  'Организованная преступность', 'Работа', 'Иясикэй', 'Выживание', 'Исполнительское искусство', 'Антропоморфизм', 'Кроссдрессинг', 'Идолы (Жен.)', 'Игра с высокими ставками', 'Медицина', 'Питомцы', 'Образовательное', 'Идолы (Муж.)', 'Романтический подтекст', 'Гурман']
 
-    def __init__(self, use_lxml: bool = False, mirror: str|None = None, proxy: str | None = None) -> None:
+    origins_list = ['original', 'manga', 'web_manga', 'four_koma_manga', 'light_novel', 'novel', 'web_novel', 'visual_novel', 'game', 'card_game', 'book', 'picture_book', 'radio', 'music', 'mixed_media', 'other']
+    origins_list_ru = ['Оригинал', 'Манга', 'Веб-манга', 'Ёнкома', 'Ранобэ', 'Роман', 'Веб-новелла', 'Визуальная новелла', 'Игра', 'Карточная игра', 'Книга', 'Книга с картинками', 'Радио', 'Музыка', 'Более одного', 'Другое']
+
+    def __init__(self, use_lxml: bool = False, mirror: str|None = None, proxy: str | None = None, graphql_mirror: str | None = 'shikimori.io') -> None:
         """
         :use_lxml: Использовать lxml парсер. В некоторых случаях может не работать, однако работает значительно быстрее стандартного.
         :mirror: В случае, если оригинальный домен заблокирован, можно использовать этот параметр, чтобы заменить адрес сайта на зеркало. Пример: "1234.net"
         :proxy: http или socks5 прокси (`http://host:port` или `socks5://user:pass@host:port`) по умолчанию None
+        :graphql_mirror: Зеркало для graphql (по умолчанию shikimori.io)
         """
         self.requests = AsyncSession(proxy=proxy)
 
@@ -36,7 +41,8 @@ class ShikimoriParserAsync:
         if mirror: # Если есть зеркало, то меняем домен на него
             self._dmn = mirror
         else:
-            self._dmn = "shikimori.one"
+            self._dmn = "shikimori.io"
+        self._graphql_mirror = graphql_mirror
 
     async def search(self, title: str) -> list:
         """
@@ -158,9 +164,9 @@ class ShikimoriParserAsync:
         if not soup.find('p', {'class': 'age-restricted-warning'}) is None:
             raise errors.AgeRestricted(f'Аниме по ссылке "{shikimori_link}" невозможно обработать из-за блокировки по возрастному рейтингу.')
         res = {}
-        title = soup.find('header', {'class': 'head'}).find('h1').text.split(' / ')
-        res['title'] = title[0]
-        res['original_title'] = title[1]
+        title = soup.find('header', {'class': 'head'}).find('h1').text.split('/')
+        res['title'] = title[0].strip()
+        res['original_title'] = title[1].strip()
         picture = soup.find('picture')
         if not picture is None:
             res['picture'] = picture.find('img').get_attribute_list('srcset')[0].replace(' 2x', '')
@@ -367,159 +373,129 @@ class ShikimoriParserAsync:
             pass
         return res
     
-    async def get_anime_list(self, status: list[str] = [], anime_type: list[str] = [], rating: str | None = None, genres: list[str] = [], start_page: int = 1, page_limit: int = 3, sort_by: str = 'rating') -> list:
-        """
-        Получить список аниме по фильтрам
-
-        :status: текущий статус аниме (список нужных) (Доступно: ongoing, anons, released, latest) (По умолчанию пусто - любой)
-        :anime_type: Тип аниме (список нужных) (Доступно: tv (тв сериал), movie (фильм), ova, ona, special (спецвыпуски), tv_special (тв спецвыпуск), music (клип), pv (проморолик), cm (реклама)) (По умолчанию пусто - любой)
-        :rating: Возрастной рейтинг (Один вариант) (Доступно: g (нет возрастного ограничения), pg (рекомендуется присутствие родителей), pg_13 (детям до 13 просмотр не желателен), r (Лицам до 17 лет обязательно присутствие взрослого), r_plus (Лицам до 17 лет просмотр запрещен)) (По умолчанию пусто - любой)
-        :genres: Жанры (список нужных) (Доступно: 
-            "1-Action": "Экшен",
-            "2-Adventure": "Приключения",
-            "3-Racing": "Гонки",
-            "4-Comedy": "Комедия",
-            "5-Avant-Garde": "Авангард",
-            "6-Mythology": "Мифология",
-            "7-Mystery": "Тайна",
-            "8-Drama": "Драма",
-            "9-Ecchi": "Этти",
-            "10-Fantasy": "Фэнтези",
-            "11-Strategy-Game": "Стратегические игры",
-            "13-Historical": "Исторический",
-            "14-Horror": "Ужасы",
-            "15-Kids": "Детское",
-            "17-Martial-Arts": "Боевые искусства",
-            "18-Mecha": "Меха",
-            "19-Music": "Музыка",
-            "20-Parody": "Пародия",
-            "21-Samurai": "Самураи",
-            "22-Romance": "Романтика",
-            "23-School": "Школа",
-            "24-Sci-Fi": "Фантастика",
-            "25-Shoujo": "Сёдзё",
-            "27-Shounen": "Сёнен",
-            "29-Space": "Космос",
-            "30-Sports": "Спорт",
-            "31-Super-Power": "Супер сила",
-            "32-Vampire": "Вампиры",
-            "35-Harem": "Гарем",
-            "36-Slice-of-Life": "Повседневность",
-            "37-Supernatural": "Сверхъестественное",
-            "38-Military": "Военное",
-            "39-Detective": "Детектив",
-            "40-Psychological": "Психологическое",
-            "42-Seinen": "Сэйнэн",
-            "43-Josei": "Дзёсей",
-            "102-Team-Sports": "Командный спорт",
-            "103-Video-Game": "Видеоигры",
-            "104-Adult-Cast": "Взрослые персонажи",
-            "105-Gore": "Жестокость",
-            "106-Reincarnation": "Реинкарнация",
-            "107-Love-Polygon": "Любовный многоугольник",
-            "108-Visual-Arts": "Изобразительное искусство",
-            "111-Time-Travel": "Путешествие во времени",
-            "112-Gag-Humor": "Гэг-юмор",
-            "114-Award-Winning": "Удостоено наград",
-            "117-Suspense": "Триллер",
-            "118-Combat-Sports": "Спортивные единоборства",
-            "119-CGDCT": "CGDCT",
-            "124-Mahou-Shoujo": "Махо-сёдзё",
-            "125-Reverse-Harem": "Реверс-гарем",
-            "130-Isekai": "Исэкай",
-            "131-Delinquents": "Хулиганы",
-            "134-Childcare": "Забота о детях",
-            "135-Magical-Sex-Shift": "Магическая смена пола",
-            "136-Showbiz": "Шоу-бизнес",
-            "137-Otaku-Culture": "Культура отаку",
-            "138-Organized-Crime": "Организованная преступность",
-            "139-Workplace": "Работа",
-            "140-Iyashikei": "Иясикэй",
-            "141-Survival": "Выживание",
-            "142-Performing-Arts": "Исполнительское искусство",
-            "143-Anthropomorphic": "Антропоморфизм",
-            "144-Crossdressing": "Кроссдрессинг",
-            "145-Idols-(Female)": "Идолы (Жен.)",
-            "146-High-Stakes-Game": "Игра с высокими ставками",
-            "147-Medical": "Медицина",
-            "148-Pets": "Питомцы",
-            "149-Educational": "Образовательное",
-            "150-Idols-(Male)": "Идолы (Муж.)",
-            "151-Romantic-Subtext": "Романтический подтекст",
-            "543-Gourmet": "Гурман"
-            )
-            (По умолчанию пусто - любой)
-        :start_page: Начальная страница для поиска (По умолчанию 1)
-        :page_limit: ограничение по количеству страниц для парсинга (По умолчанию 3)
-        :sort_by: как сортировать выдачу (Доступно: rating (рейтинг), popularity (популярность), name (по алфавиту), aired_on (по дате выхода), ranked_random (случайно), id_desc (по id)) (По умолчанию: rating)
-
-        Возвращает список словарей вида:
-        [
-            {
-                'original_title': 'Оригинальное название (на английском)',
-                'poster': 'Ссылка на картинку-постер',
-                'shikimori_id': 'id шикимори',
-                'title': 'Название на русском',
-                'type': 'Тип аниме (TV Сериал, ONA, ...)',
-                'url': 'Ссылка на страницу аниме',
-                'year': 'год выхода аниме'
-            },
-            ...
-        ]
-        """
-        if page_limit <= 0:
-            return []
-
-        status = [st for st in status if st in ['ongoing', 'anons', 'released', 'latest']] # Убираем все неизвестные варианты чтобы ничего не сломалось
-        anime_type = [st for st in anime_type if st in ['tv', 'movie', 'ova', 'ona', 'special', 'tv_special', 'music', 'pv', 'cm']] # Убираем все неизвестные варианты чтобы ничего не сломалось
-        if sort_by not in ['rating', 'popularity', 'name', 'aired_on', 'ranked_random', 'id_desc']:
-            sort_by = 'rating' # По умолчанию сортировка по рейтингу
-        genres = [st for st in genres if st in self.genres_list]
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
-            'Accept': 'application/json, text/plain, */*',
-            'Referer': f'https://{self._dmn}/animes/status/ongoing',
-            'X-Requested-With': 'XMLHttpRequest',
-        }
-
-        search_url = f'https://{self._dmn}/animes'
-        if len(anime_type) > 0:
-            search_url += f'/kind/{",".join(anime_type)}'
-        if len(status) > 0:
-            search_url += f'/status/{",".join(status)}'
-        if len(genres) > 0:
-            search_url += f'/genre/{",".join(genres)}'
-        if rating != None and rating not in ['g', 'pg' 'pg_13', 'r', 'r_plus']:
-            rating = None # Проверяем что введены только доступные (для рейтинга rx требуется аккаунт или пользуйтесь функцией deep_search)
-
-        res = []
-        i = start_page
-        total_pages = start_page+1 # (После первого запроса обновится)
-        while i < start_page+page_limit and i <= total_pages:
-            response = await self.requests.get(f'{search_url}/page/{i}.json?order={sort_by}{f"&rating={rating}" if rating != None else ""}', headers=headers)
-            if response.status_code == 429:
-                raise errors.TooManyRequests(f'Сервер вернул код 429 для обозначения что запросы выполняются слишком часто.')
-            elif response.status_code == 520:
-                raise errors.ServiceIsOverloaded("Сервер вернул статус ответа 520, что означает что он перегружен и не может ответить сразу.")
-            elif response.status_code != 200:
-                raise errors.ServiceError('Произошла непредвиденная ошибка при получении данных об онгоингах. Ожидался статус ответа 200. Получен: ', response.status_code)
-            try:
-                data = response.json()
-            except json.JSONDecodeError:
-                raise errors.UnexpectedBehavior('Ошибка парсинга json при получении данных об онгоингах')
-            else:
-                total_pages = data['pages_count']
-                soup = Soup(data['content'], 'lxml') if self.USE_LXML else Soup(data['content'], 'html.parser')
-                articles = soup.find_all('article')
-                if len(articles) == 0 and i > 1:
-                    return res # В случае если страница есть но данных на ней нет
-                elif len(articles) == 0 and i == 1: # Если на первой странице нет данных
-                    raise errors.NoResults('Данные по онгоингам не найдены')
-                for art in articles:
-                    res.append(self._get_anime_info_from_article(art))
-            i += 1
-        return res
+    async def get_anime_list(self, status: list[str] = [], anime_type: list[str] = [], rating: list[str] | str = [], genres: list[str] = [], seasons: list[str] = [], duration: list[str] | str = [], origin: list[str] = [], studios: list[str] = [], licensed: list[str] = [], rating_from: int | None = None, rating_to: int | None = None, start_page: int = 1, page_limit: int = 3, sort_by: str = 'rating') -> list:
+            """
+            Получить список аниме по фильтрам
+    
+            :status: текущий статус аниме (список нужных) (Доступно: ongoing, anons, released, latest, !ongoing (не онгоинг), !anons (не анонс), !released (не вышло), !latest (не вышло недавно)) (По умолчанию пусто - любой)
+            :anime_type: Тип аниме (список нужных) (Доступно: tv (тв сериал), !tv (не тв сериал), movie (фильм), !movie (не фильм), ova, !ova, ona, !ona, special (спецвыпуски), !special, tv_special (тв спецвыпуск), !tv_special, music (клип), !music, pv (проморолик), !pv, cm (реклама), !cm, tv_13 (ТВ сериал 12 серий), !tv_13, tv_24 (ТВ сериал 24 серии), !tv_24, tv_48 (ТВ сериал 48+ серий), !tv_48) (По умолчанию пусто - любой)
+            :rating: Возрастной рейтинг (Список нужных или строка) (Доступно: g (нет возрастного ограничения), !g (не имеющие рейтинга g), pg (рекомендуется присутствие родителей), !pg, pg_13 (детям до 13 просмотр не желателен), !pg_13, r (Лицам до 17 лет обязательно присутствие взрослого), !r, r_plus (Лицам до 17 лет просмотр запрещен), !r_plus) (По умолчанию пусто - любой)
+            :genres: Жанры и темы (список нужных), список доступных значений можно посмотреть в переменных класса genres_list и genrest_list_ru. Указывать можно как английские значения, так и русские. По умолчанию пустой список.
+            :seasons: Сезоны аниме (список нужных). Значения формируютс яследующим образом: <время года>_<год>. Пример: winter_2026. Валидация данных отсутствует. По умолчанию отсутствует.
+            :duration: Продолжительность серии (список нужных или строка). Доступные параметры: S - Меньше 10 минут, D - 10-30 минут, F - больше 30 минут, !S - НЕ меньше 10 минут, !D - Не в промежутке 10-30 минут, !F - не больше 30 минут. (Список). По умолчанию пустой список.
+            :origin: Источник (список нужных), список доступных значений можно посмотреть в переменных класса origins_list и origins_list_ru. Указывать можно как английские значения, так и русские. По умолчанию пустой список.
+            :studios: Студии анимации (список нужных). Валидация данных отсутствует. По умолчанию пустой список.
+            :licensed: Лицензия (список нужных). Валидация данных отсутстсвует. По умолчанию пустой список.
+            :rating_from: Рейтинг шикимори от (целое число). По умолчанию отсутствует.
+            :rating_to: Рейтинг шикимори до (целое число). По умолчанию отсутствует.
+            :start_page: Начальная страница для поиска (По умолчанию 1)
+            :page_limit: ограничение по количеству страниц для парсинга (По умолчанию 3)
+            :sort_by: как сортировать выдачу (одно значение) (Доступно: rating (рейтинг), popularity (популярность), name (по алфавиту), aired_on (по дате выхода), ranked_random (случайно), id_desc (по id)) (По умолчанию: rating)
+    
+            Возвращает список словарей вида:
+            [
+                {
+                    'original_title': 'Оригинальное название (на английском)',
+                    'poster': 'Ссылка на картинку-постер',
+                    'shikimori_id': 'id шикимори',
+                    'title': 'Название на русском',
+                    'type': 'Тип аниме (TV Сериал, ONA, ...)',
+                    'url': 'Ссылка на страницу аниме',
+                    'year': 'год выхода аниме'
+                },
+                ...
+            ]
+            """
+            if page_limit <= 0:
+                return []
+    
+            status = [st for st in status if st in ['ongoing', 'anons', 'released', 'latest', '!ongoing', '!anons', '!released', '!latest']] # Убираем все неизвестные варианты чтобы ничего не сломалось
+            anime_type = [st for st in anime_type if st in ['tv', 'movie', 'ova', 'ona', 'special', 'tv_special', 'music', 'pv', 'cm', '!tv', '!movie', '!ova', '!ona', '!special', '!tv_special', '!music', '!pv', '!cm', 'tv_13', '!tv_13', 'tv_24', '!tv_24', 'tv_48', '!tv_48']] # Убираем все неизвестные варианты чтобы ничего не сломалось
+            if type(rating) == str: # Поддержка старого кода (раньше было только одно значение)
+                rating = [rating]
+            rating = [st for st in rating if st in ['g', 'pg' 'pg_13', 'r', 'r_plus', '!g', '!pg' '!pg_13', '!r', '!r_plus']]
+            if type(duration) == str: # Странно указывать список из одного значения, но нужна поддержка нескольких, поэтому так
+                duration = [duration]
+            duration = [st for st in duration if st in ['S', 'D', 'F', '!S', '!D', '!F']]
+            
+            if sort_by not in ['rating', 'popularity', 'name', 'aired_on', 'ranked_random', 'id_desc']:
+                sort_by = 'rating' # По умолчанию сортировка по рейтингу
+            _genres = []
+            for st in genres: # Проверка списка жанров/тем
+                if st in self.genres_list:
+                    _genres.append(st)
+                elif st[0] == '!' and st[1:] in self.genres_list:
+                    _genres.append(st)
+                elif st in self.genres_list_ru:
+                    _genres.append(self.genres_list[self.genres_list_ru.index(st)]) # Подставляем английское значение
+                elif st[0] == '!' and st[1:] in self.genres_list_ru:
+                    _genres.append('!'+self.genres_list[self.genres_list_ru.index(st[1:])]) # Подставляем исключенное английское значение
+                # Если жанр/тема не в спике, то он удаляется, чтобы не сломать ничего
+            genres = _genres
+            _origins = []
+            for st in origin: # Проверка списка источников
+                if st in self.origins_list:
+                    _origins.append(st)
+                elif st[0] == '!' and st[1:] in self.origins_list:
+                    _origins.append(st)
+                elif st in self.origins_list_ru:
+                    _origins.append(self.origins_list[self.origins_list_ru.index(st)]) # Подставляем английское значение
+                elif st[0] == '!' and st[1:] in self.genres_list_ru:
+                    _origins.append('!'+self.origins_list[self.origins_list_ru.index(st[1:])]) # Подставляем исключенное английское значение
+                elif st == 'Енкома' or '!Енкома': # На всякий, если буква ё потеряется
+                    _origins.append('four_koma_manga' if st[0] != '!' else '!four_koma_manga') 
+                # Если источник не в спике, то он удаляется, чтобы не сломать ничего
+            origin = _origins
+    
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+                'Accept': 'application/json, text/plain, */*',
+                'Referer': f'https://{self._dmn}/animes/status/ongoing',
+                'X-Requested-With': 'XMLHttpRequest',
+            }
+    
+            search_url = f'https://{self._dmn}/animes'
+            if len(anime_type) > 0:
+                search_url += f'/kind/{",".join(anime_type)}'
+            if len(status) > 0:
+                search_url += f'/status/{",".join(status)}'
+            if len(seasons) > 0:
+                search_url += f'/season/{",".join(seasons)}'
+            if len(genres) > 0:
+                search_url += f'/genre/{",".join(genres)}'
+            if len(studios) > 0:
+                search_url += f'/studio/{",".join(studios)}'
+            
+    
+            res = []
+            i = start_page
+            total_pages = start_page+1 # (После первого запроса обновится)
+            while i < start_page+page_limit and i <= total_pages:
+                response = await self.requests.get(f'{search_url}/page/{i}?format=json&order={sort_by}{f"&rating={'%2C'.join(rating)}" if rating != [] else ""}{f"&duration={'%2C'.join(duration)}" if duration != [] else ""}{f"&shiki_score={rating_from}-{rating_to}".replace('None', '') if rating_from != None or rating_to != None else ""}', headers=headers)
+                if response.status_code == 429:
+                    raise errors.TooManyRequests(f'Сервер вернул код 429 для обозначения что запросы выполняются слишком часто.')
+                elif response.status_code == 520:
+                    raise errors.ServiceIsOverloaded("Сервер вернул статус ответа 520, что означает что он перегружен и не может ответить сразу.")
+                elif response.status_code == 404:
+                    raise errors.NoResults("Сервер вернул код 404 - По заданным параметрам ничего не найдено.")
+                elif response.status_code != 200:
+                    raise errors.ServiceError('Произошла непредвиденная ошибка при получении данных о списке аниме. Ожидался статус ответа 200. Получен: ', response.status_code)
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    raise errors.UnexpectedBehavior('Ошибка парсинга json при получении данных о списке аниме')
+                else:
+                    total_pages = data['pages_count']
+                    soup = Soup(data['content'], 'lxml') if self.USE_LXML else Soup(data['content'], 'html.parser')
+                    articles = soup.find_all('article')
+                    if len(articles) == 0 and i > 1:
+                        return res # В случае если страница есть но данных на ней нет
+                    elif len(articles) == 0 and i == 1: # Если на первой странице нет данных
+                        raise errors.NoResults('Данные по онгоингам не найдены')
+                    for art in articles:
+                        res.append(self._get_anime_info_from_article(art))
+                i += 1
+            return res
     
     def _get_anime_info_from_article(self, article: Soup) -> dict:
         """
@@ -697,12 +673,18 @@ class ShikimoriParserAsync:
         return_query += '}'
         query += return_query + '\n}'
 
+        if self._graphql_mirror:
+            dmn = self._graphql_mirror
+        else:
+            dmn = self._dmn
+
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
             'Accept': '*/*',
-            'Referer': f'https://{self._dmn}/api/doc/graphql',
+            'Referer': f'https://{dmn}/api/doc/graphql',
             'content-type': 'application/json',
-            'Origin': f'https://{self._dmn}',
+            'Origin': f'https://{dmn}',
         }
 
         json_data = {
@@ -711,7 +693,7 @@ class ShikimoriParserAsync:
             'query': query
         }
         
-        response = await self.requests.post(f'https://{self._dmn}/api/graphql', headers=headers, json=json_data)
+        response = await self.requests.post(f'https://{dmn}/api/graphql', headers=headers, json=json_data)
         if response.status_code == 429:
             raise errors.TooManyRequests(f'Сервер вернул код 429 для обозначения что запросы выполняются слишком часто.')
         elif response.status_code == 520:
@@ -750,12 +732,17 @@ class ShikimoriParserAsync:
         return_query += '}'
         query += return_query + '\n}'
 
+        if self._graphql_mirror:
+            dmn = self._graphql_mirror
+        else:
+            dmn = self._dmn
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0',
             'Accept': '*/*',
-            'Referer': f'https://{self._dmn}/api/doc/graphql',
+            'Referer': f'https://{dmn}/api/doc/graphql',
             'content-type': 'application/json',
-            'Origin': f'https://{self._dmn}',
+            'Origin': f'https://{dmn}',
         }
 
         json_data = {
@@ -764,7 +751,7 @@ class ShikimoriParserAsync:
             'query': query
         }
         
-        response = await self.requests.post(f'https://{self._dmn}/api/graphql', headers=headers, json=json_data)
+        response = await self.requests.post(f'https://{dmn}/api/graphql', headers=headers, json=json_data)
         if response.status_code == 429:
             raise errors.TooManyRequests(f'Сервер вернул код 429 для обозначения что запросы выполняются слишком часто.')
         elif response.status_code == 520:
