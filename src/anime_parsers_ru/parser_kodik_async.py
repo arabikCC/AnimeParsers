@@ -19,11 +19,11 @@ else:
 
 try:
     from . import errors # Импорт если библиотека установлена
-    from .internal_tools import AsyncSession, TTLCache
+    from .internal_tools import AsyncSession, TTLCache, KodikDomainManager
     from .parser_kodik import KodikParser
 except ImportError:
     import errors # Импорт если библиотека не установлена и файл лежит локально
-    from internal_tools import AsyncSession, TTLCache
+    from internal_tools import AsyncSession, TTLCache, KodikDomainManager
     from parser_kodik import KodikParser
 
 class KodikParserAsync:
@@ -51,6 +51,7 @@ class KodikParserAsync:
             raise ImportWarning('Параметр use_lxml установлен в true, однако при попытке импорта lxml произошла ошибка')
         self.USE_LXML = use_lxml
         self.requests = AsyncSession(proxy=proxy)
+        self.domain_manager = KodikDomainManager()
         self._crypt_step = None
         self._cached_post_link = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl) if use_cache else {}
         self._cached_link_to_info = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl) if use_cache else {}
@@ -518,6 +519,7 @@ class KodikParserAsync:
         else:
             result_link = 'https:'+data['link'] if https else 'http:'+data['link']
             
+        result_link = self.normalize_player_url(result_link)
         if self.use_cache:
             self._cached_link_to_info[cache_key] = result_link
         return result_link
@@ -572,6 +574,7 @@ class KodikParserAsync:
             ]
         }
         """
+        embed_link = self.normalize_player_url(embed_link)
         data = await self.requests.get(embed_link)
         try:
             data = data.text
@@ -612,10 +615,10 @@ class KodikParserAsync:
             raise errors.UnexpectedBehavior('Ссылка на данные не была распознана как ссылка на сериал или фильм')
     
     def _is_serial(self, iframe_url: str) -> bool:
-        return True if iframe_url[iframe_url.find("kodikplayer.com/")+16] == "s" else False
+        return "/serial/" in iframe_url
 
     def _is_video(self, iframe_url: str) -> bool:
-        return True if iframe_url[iframe_url.find("kodikplayer.com/")+16] == "v" else False
+        return "/video/" in iframe_url
     
     def _generate_translations_dict(self, translations_div: Soup | None) -> dict:
         if not isinstance(translations_div, Soup) and translations_div != None:
@@ -711,7 +714,7 @@ class KodikParserAsync:
                     media_hash = translation.get_attribute_list('data-media-hash')[0]
                     media_id = translation.get_attribute_list('data-media-id')[0]
                     break
-            url = f'https://kodikplayer.com/serial/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}'
+            url = f'https://{self.player_domain}/serial/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}'
             data = await self.requests.get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
@@ -730,7 +733,7 @@ class KodikParserAsync:
                     media_hash = translation.get_attribute_list('data-media-hash')[0]
                     media_id = translation.get_attribute_list('data-media-id')[0]
                     break
-            url = f'https://kodikplayer.com/video/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}'
+            url = f'https://{self.player_domain}/video/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}'
             data = await self.requests.get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
@@ -799,7 +802,7 @@ class KodikParserAsync:
             'd_sign': urlParams['d_sign'],
             'pd': urlParams['pd'],
             'pd_sign': urlParams['pd_sign'],
-            'ref': '',
+            'ref': urlParams.get('ref', ''),
             'ref_sign': urlParams['ref_sign'],
             'bad_user': 'true',
             'cdn_is_working': 'true',
@@ -810,7 +813,7 @@ class KodikParserAsync:
         }
 
         post_link = await self._get_post_link(script_url)
-        target_url = f'https://kodikplayer.com{post_link}'
+        target_url = f'https://{self.player_domain}{post_link}'
 
         data = await self.requests.post(target_url, data=params, headers=headers)
 
@@ -818,7 +821,7 @@ class KodikParserAsync:
         if data.status_code != 200 and self.use_cache and script_url in self._cached_post_link:
             del self._cached_post_link[script_url]
             post_link = await self._get_post_link(script_url)
-            data = await self.requests.post(f'https://kodikplayer.com{post_link}', data=params, headers=headers)
+            data = await self.requests.post(f'https://{self.player_domain}{post_link}', data=params, headers=headers)
         try:
             data = data.json()
         except Exception as ex:
@@ -951,7 +954,9 @@ class KodikParserAsync:
         if self.use_cache and script_url in self._cached_post_link:
             return self._cached_post_link[script_url]
 
-        data = await self.requests.get('https://kodikplayer.com'+script_url)
+        req_url = f'https://{self.player_domain}{script_url}' if not script_url.startswith(("http://", "https://")) else script_url
+        req_url = self.normalize_player_url(req_url)
+        data = await self.requests.get(req_url)
         if data.status_code != 200:
             raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
         try:
@@ -1121,3 +1126,16 @@ class KodikParserAsync:
             return res
         else:
             raise errors.TokenError(f"Для валидации токена он должен быть указан при инициализации или получен автоматически. Текущий токен: {self.TOKEN}")
+
+    @property
+    def player_domain(self) -> str:
+        """Текущий активный домен плеера (например, 'kodikplayer.com')"""
+        return self.domain_manager.get_player_domain()
+
+    def normalize_player_url(self, url: str) -> str:
+        """Нормализует URL, заменяя любые устаревшие зеркала кодика на актуальный домен"""
+        return self.domain_manager.normalize_url(url)
+
+    async def update_player_domains(self) -> bool:
+        """Асинхронно обновляет список актуальных зеркал Kodik"""
+        return await self.domain_manager.update_async(self.requests)

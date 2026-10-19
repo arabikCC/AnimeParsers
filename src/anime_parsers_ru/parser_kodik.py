@@ -11,10 +11,10 @@ from base64 import b64decode
 
 try:
     from . import errors # Импорт если библиотека установлена
-    from .internal_tools import TTLCache
+    from .internal_tools import TTLCache, KodikDomainManager
 except ImportError:
     import errors # Импорт если библиотека не установлена и файл лежит локально
-    from internal_tools import TTLCache
+    from internal_tools import TTLCache, KodikDomainManager
 
 class KodikParser:
     """
@@ -39,12 +39,23 @@ class KodikParser:
             raise ImportWarning('Параметр use_lxml установлен в true, однако при попытке импорта lxml произошла ошибка')
         self.USE_LXML = use_lxml
         self._crypt_step = None
+        self.domain_manager = KodikDomainManager()
+        self.domain_manager.update_sync(proxies=self.proxies)
         self._cached_post_link = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl) if use_cache else {}
         self._cached_link_to_info = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl) if use_cache else {}
         self._cached_iframe_html = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl) if use_cache else {}
         if validate_token and not self.validate_token():
             raise errors.TokenError("Ошибка валидации токена. Одна или несколько функций недоступны с данным токеном. "\
                                     "Чтобы пропустить валидацию, укажите параметр validate_token=False")
+
+    @property
+    def player_domain(self) -> str:
+        """Текущий активный домен плеера (например, 'kodikplayer.com')"""
+        return self.domain_manager.get_player_domain()
+
+    def normalize_player_url(self, url: str) -> str:
+        """Нормализует URL, заменяя любые устаревшие зеркала кодика на актуальный домен"""
+        return self.domain_manager.normalize_url(url)
 
     def api_request(self, endpoint: str, filters: dict = {}, parameters: dict = {}) -> dict:
         """
@@ -503,6 +514,7 @@ class KodikParser:
         else:
             result_link = 'https:'+data['link'] if https else 'http:'+data['link']
             
+        result_link = self.normalize_player_url(result_link)
         if self.use_cache:
             self._cached_link_to_info[cache_key] = result_link
         return result_link
@@ -557,6 +569,7 @@ class KodikParser:
             ]
         }
         """
+        embed_link = self.normalize_player_url(embed_link)
         data = requests.get(embed_link, proxies=self.proxies)
         try:
             data = data.text
@@ -598,10 +611,10 @@ class KodikParser:
             raise errors.UnexpectedBehavior('Ссылка на данные не была распознана как ссылка на сериал или фильм')
     
     def _is_serial(self, iframe_url: str) -> bool:
-        return True if iframe_url[iframe_url.find("kodikplayer.com/")+16] == "s" else False
+        return "/serial/" in iframe_url
 
     def _is_video(self, iframe_url: str) -> bool:
-        return True if iframe_url[iframe_url.find("kodikplayer.com/")+16] == "v" else False
+        return "/video/" in iframe_url
     
     def _generate_translations_dict(self, translations_div: Soup) -> dict:
         if not isinstance(translations_div, Soup) and translations_div != None:
@@ -701,7 +714,7 @@ class KodikParser:
                     media_hash = translation.get_attribute_list("data-media-hash")[0]
                     media_id = translation.get_attribute_list("data-media-id")[0]
                     break
-            url = f"https://kodikplayer.com/serial/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
+            url = f"https://{self.player_domain}/serial/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
             data = requests.get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
@@ -722,7 +735,7 @@ class KodikParser:
                     media_hash = translation.get_attribute_list("data-media-hash")[0]
                     media_id = translation.get_attribute_list("data-media-id")[0]
                     break
-            url = f"https://kodikplayer.com/video/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
+            url = f"https://{self.player_domain}/video/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
             data = requests.get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
@@ -791,7 +804,7 @@ class KodikParser:
             'd_sign': urlParams['d_sign'],
             'pd': urlParams['pd'],
             'pd_sign': urlParams['pd_sign'],
-            'ref': '',
+            'ref': urlParams.get('ref', ''),
             'ref_sign': urlParams['ref_sign'],
             'bad_user': 'true',
             'cdn_is_working': 'true',
@@ -800,13 +813,13 @@ class KodikParser:
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
         post_link = self._get_post_link(script_url)
-        data = requests.post(f"https://kodikplayer.com{post_link}", data=params, headers=headers, proxies=self.proxies)
+        data = requests.post(f"https://{self.player_domain}{post_link}", data=params, headers=headers, proxies=self.proxies)
 
         # Если запрос не удался и мы использовали кэш — сбрасываем и пробуем заново
         if data.status_code != 200 and self.use_cache and script_url in self._cached_post_link:
             del self._cached_post_link[script_url]
             post_link = self._get_post_link(script_url)
-            data = requests.post(f"https://kodikplayer.com{post_link}", data=params, headers=headers, proxies=self.proxies)
+            data = requests.post(f"https://{self.player_domain}{post_link}", data=params, headers=headers, proxies=self.proxies)
         try:
             data = data.json()
         except Exception as ex:
@@ -941,7 +954,9 @@ class KodikParser:
         if self.use_cache and script_url in self._cached_post_link:
             return self._cached_post_link[script_url]
 
-        data = requests.get("https://kodikplayer.com" + script_url)
+        req_url = f"https://{self.player_domain}{script_url}" if not script_url.startswith(("http://", "https://")) else script_url
+        req_url = self.normalize_player_url(req_url)
+        data = requests.get(req_url, proxies=self.proxies)
         if data.status_code != 200:
             raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
         try:
