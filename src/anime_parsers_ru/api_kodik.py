@@ -20,6 +20,9 @@ except ImportError:
 
 import requests
 
+# Общая сессия для запросов к API: переиспользует TCP/TLS соединения (keep-alive)
+_SESSION = requests.Session()
+
 class _OrderList:
     asc = 'asc'
     desc = 'desc'
@@ -1309,10 +1312,10 @@ class Api:
                 payload[item] = val
 
             url = f"https://kodik-api.com/{self._endpoint}"
-            data = requests.post(url, data=payload, proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None)
+            data = _SESSION.post(url, data=payload, proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None)
         else:
             url = link
-            data = requests.post(url, proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None)
+            data = _SESSION.post(url, proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None)
 
         try:
             data = data.json()

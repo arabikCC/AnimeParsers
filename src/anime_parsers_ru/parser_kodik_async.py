@@ -6,6 +6,7 @@ except ImportError:
 else:
     LXML_WORKS = True
 import json
+import warnings
 from bs4 import BeautifulSoup as Soup
 from base64 import b64decode
 
@@ -20,11 +21,11 @@ else:
 try:
     from . import errors # Импорт если библиотека установлена
     from .internal_tools import AsyncSession, TTLCache, KodikDomainManager
-    from .parser_kodik import KodikParser
+    from .parser_kodik import KodikParser, PROXY_LINK_WARNING
 except ImportError:
     import errors # Импорт если библиотека не установлена и файл лежит локально
     from internal_tools import AsyncSession, TTLCache, KodikDomainManager
-    from parser_kodik import KodikParser
+    from parser_kodik import KodikParser, PROXY_LINK_WARNING
 
 class KodikParserAsync:
     """
@@ -743,17 +744,9 @@ class KodikParserAsync:
                 raise errors.ServiceError(f"Произошла ошибка при запросе. Ожидался ответ текстового вида, при попытке получения произошла непредвиденная ошибка: {ex}")
             
             soup = Soup(data, 'lxml') if self.USE_LXML else Soup(data, 'html.parser')
-        script_url = soup.find_all('script')[1].get_attribute_list('src')[0]
+        script_url, video_type, video_hash, video_id = self._extract_video_info(data, soup)
 
-        hash_container = soup.find_all('script')[4].text
-        video_type = hash_container[hash_container.find('.type = \'')+9:]
-        video_type = video_type[:video_type.find('\'')]
-        video_hash = hash_container[hash_container.find('.hash = \'')+9:]
-        video_hash = video_hash[:video_hash.find('\'')]
-        video_id = hash_container[hash_container.find('.id = \'')+7:]
-        video_id = video_id[:video_id.find('\'')]
-
-        skip_segments = self._get_skip_segments(hash_container)
+        skip_segments = self._get_skip_segments(data)
 
         link_data, max_quality, tiles_config = await self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
 
@@ -761,6 +754,13 @@ class KodikParserAsync:
         download_url = download_url[: download_url.rfind("/") + 1]
         tiles_config["skip_segments"] = skip_segments
         return download_url, max_quality, tiles_config
+
+    def _extract_video_info(self, html: str, soup: Soup) -> tuple[str, str, str, str]:
+        """
+        Извлекает (script_url, video_type, video_hash, video_id) со страницы плеера.
+        Логика общая с синхронным парсером: регулярки + fallback на BeautifulSoup.
+        """
+        return KodikParser._extract_video_info(self, html, soup)
 
     def _get_skip_segments(self, hash_container: str) -> list[list[int]]:
         if "parseSkipButton(" not in hash_container:
@@ -838,11 +838,7 @@ class KodikParserAsync:
         url = data_url if "mp4:hls:manifest" in data_url else self._convert(data_url)
         
         if "/s/m/" in url:
-            print(
-                'Получена прокси-ссылка (/s/m/). Вероятнее всего ваш IP заблокирован кодиком. '
-                'Используйте параметр proxy при инициализации парсера: '
-                'KodikParserAsync(token="...", proxy="socks5://user:pass@host:port")'
-            )
+            warnings.warn(PROXY_LINK_WARNING, stacklevel=3)
 
         max_quality = max([int(x) for x in data["links"].keys()])
 
@@ -1036,7 +1032,7 @@ class KodikParserAsync:
         for token in __gh_tokens['stable']:
             _tmp_parser.TOKEN = decrypt_token(token["tokn"])
             try:
-                if _tmp_parser.validate_token(print_info=False):
+                if await _tmp_parser.validate_token(print_info=False):
                     return _tmp_parser.TOKEN
             except errors.TokenError:
                 pass
@@ -1046,7 +1042,7 @@ class KodikParserAsync:
         for token in __gh_tokens['unstable']:
             _tmp_parser.TOKEN = decrypt_token(token["tokn"])
             try:
-                if _tmp_parser.validate_token(print_info=False):
+                if await _tmp_parser.validate_token(print_info=False):
                     return _tmp_parser.TOKEN
             except errors.TokenError:
                 pass
@@ -1058,7 +1054,7 @@ class KodikParserAsync:
             # Получение токена который не работает для поиска и списков
             try:
                 script_url = 'https://kodik-add.com/add-players.min.js?v=2'
-                data = await req.get(script_url)
+                data = (await req.get(script_url)).text
             except Exception as ex:
                 raise errors.ServiceError(f"\n\n!!! Невозможно получить токен из файлов кодика. Возможно проблема в сертификатах сервера. Воспользуйтесь синхронным вариантом функции.\nException: {ex}")
             token = data[data.find('token=')+7:]
@@ -1081,48 +1077,32 @@ class KodikParserAsync:
     
     
     async def validate_token(self, print_info: bool = True) -> bool:
+        """
+        Проверяет доступность функций парсера с текущим токеном.
+        Используются только легковесные запросы к API (без загрузки страниц и скриптов плеера):
+        - search: base_search, base_search_by_id
+        - list: get_list
+        - get-player: get_embed_link (от него зависят get_info, get_link, get_m3u8_playlist и т.д.,
+          остальные запросы этих функций токен не используют)
+        """
         if self.TOKEN:
             res = True
-            try:
-                await self.base_search("Кулинарные скитания", limit=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции base_search")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                await self.base_search_by_id("53446", "shikimori", limit=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции base_search_by_id")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                await self.get_info("53446", "shikimori")
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_info")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                await self.get_list(limit_per_page=1, pages_to_parse=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_list")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                await self.get_link("53446", "shikimori", 1, "610")
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_link")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
+            checks = [
+                (("base_search",), lambda: self.base_search("Кулинарные скитания", limit=1, include_material_data=False)),
+                (("base_search_by_id",), lambda: self.base_search_by_id("53446", "shikimori", limit=1, include_material_data=False)),
+                (("get_info", "get_link"), lambda: self.get_embed_link("53446", "shikimori")),
+                (("get_list",), lambda: self.get_list(limit_per_page=1, pages_to_parse=1, include_material_data=False)),
+            ]
+            for func_names, check in checks:
+                try:
+                    await check()
+                except errors.TokenError:
+                    if print_info:
+                        for name in func_names:
+                            print(f"[Token validation] Токен неверен для функции {name}")
+                    res = False
+                except Exception as ex:
+                    raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
             return res
         else:
             raise errors.TokenError(f"Для валидации токена он должен быть указан при инициализации или получен автоматически. Текущий токен: {self.TOKEN}")

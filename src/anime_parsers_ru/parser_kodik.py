@@ -6,6 +6,8 @@ except ImportError:
 else:
     LXML_WORKS = True
 import json
+import re
+import warnings
 from bs4 import BeautifulSoup as Soup
 from base64 import b64decode
 
@@ -15,6 +17,19 @@ try:
 except ImportError:
     import errors # Импорт если библиотека не установлена и файл лежит локально
     from internal_tools import TTLCache, KodikDomainManager
+
+# Предкомпилированные регулярки для извлечения данных видео со страницы плеера
+_RE_VINFO_TYPE = re.compile(r"vInfo\.type\s*=\s*['\"]([^'\"]+)['\"]")
+_RE_VINFO_HASH = re.compile(r"vInfo\.hash\s*=\s*['\"]([^'\"]+)['\"]")
+_RE_VINFO_ID = re.compile(r"vInfo\.id\s*=\s*['\"]([^'\"]+)['\"]")
+_RE_PLAYER_SCRIPT = re.compile(r"<script[^>]+src=['\"]([^'\"]*/app\.[a-z]+\.[^'\"]*\.js)['\"]")
+
+PROXY_LINK_WARNING = (
+    'Получена прокси-ссылка (/s/m/). Kodik отдает такие ссылки для зарубежных IP, VPN и датацентров. '
+    'HLS (m3u8) по ней работает, но прямое скачивание .mp4 недоступно. '
+    'Для получения прямых ссылок используйте резидентный прокси РФ/СНГ: '
+    'KodikParser(token="...", proxy="socks5://user:pass@host:port")'
+)
 
 class KodikParser:
     """
@@ -34,6 +49,8 @@ class KodikParser:
             token = KodikParser.get_token() # Попытка получения токена автоматически
         self.TOKEN = token
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        # Постоянная сессия: переиспользует TCP/TLS соединения (keep-alive) между запросами
+        self.session = requests.Session()
         self.use_cache = use_cache
         if not LXML_WORKS and use_lxml:
             raise ImportWarning('Параметр use_lxml установлен в true, однако при попытке импорта lxml произошла ошибка')
@@ -56,6 +73,16 @@ class KodikParser:
     def normalize_player_url(self, url: str) -> str:
         """Нормализует URL, заменяя любые устаревшие зеркала кодика на актуальный домен"""
         return self.domain_manager.normalize_url(url)
+
+    def _get(self, url: str, **kwargs) -> requests.Response:
+        """GET через постоянную сессию (keep-alive) с учетом прокси"""
+        kwargs.setdefault("proxies", self.proxies)
+        return self.session.get(url, **kwargs)
+
+    def _post(self, url: str, **kwargs) -> requests.Response:
+        """POST через постоянную сессию (keep-alive) с учетом прокси"""
+        kwargs.setdefault("proxies", self.proxies)
+        return self.session.post(url, **kwargs)
 
     def api_request(self, endpoint: str, filters: dict = {}, parameters: dict = {}) -> dict:
         """
@@ -80,7 +107,7 @@ class KodikParser:
             payload[item] = val
 
         url = f"https://kodik-api.com/{endpoint}"
-        data = requests.post(url, data=payload)
+        data = self._post(url, data=payload)
         
         try:
             data = data.json()
@@ -495,7 +522,7 @@ class KodikParser:
             serv = f"https://kodik-api.com/get-player?title=Player&hasPlayer=false&url=https%3A%2F%2Fkodikdb.com%2Ffind-player%worldart_cinema_id%3D{id}&token={self.TOKEN}&worldart_cinema_id={id}"
         else:
             raise ValueError("Неизвестный тип id")
-        data = requests.get(serv)
+        data = self._get(serv)
         try:
             data = data.json()
         except Exception as ex:
@@ -570,7 +597,7 @@ class KodikParser:
         }
         """
         embed_link = self.normalize_player_url(embed_link)
-        data = requests.get(embed_link, proxies=self.proxies)
+        data = self._get(embed_link)
         try:
             data = data.text
         except Exception as ex:
@@ -689,7 +716,7 @@ class KodikParser:
         if self.use_cache and link in self._cached_iframe_html:
             data = self._cached_iframe_html[link]
         else:
-            resp = requests.get(link)
+            resp = self._get(link)
             if resp.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{resp.status_code}"')
             try:
@@ -715,7 +742,7 @@ class KodikParser:
                     media_id = translation.get_attribute_list("data-media-id")[0]
                     break
             url = f"https://{self.player_domain}/serial/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
-            data = requests.get(url)
+            data = self._get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
             try:
@@ -736,7 +763,7 @@ class KodikParser:
                     media_id = translation.get_attribute_list("data-media-id")[0]
                     break
             url = f"https://{self.player_domain}/video/{media_id}/{media_hash}/720p?min_age=16&first_url=false&season=1&episode={seria_num}"
-            data = requests.get(url)
+            data = self._get(url)
             if data.status_code != 200:
                 raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
             try:
@@ -744,17 +771,9 @@ class KodikParser:
             except Exception as ex:
                 raise errors.ServiceError(f"Произошла ошибка при запросе. Ожидался ответ текстового вида, при попытке получения произошла непредвиденная ошибка: {ex}")
             soup = Soup(data, "lxml") if self.USE_LXML else Soup(data, "html.parser")
-        script_url = soup.find_all("script")[1].get_attribute_list("src")[0]
+        script_url, video_type, video_hash, video_id = self._extract_video_info(data, soup)
 
-        hash_container = soup.find_all("script")[4].text
-        video_type = hash_container[hash_container.find(".type = '") + 9 :]
-        video_type = video_type[: video_type.find("'")]
-        video_hash = hash_container[hash_container.find(".hash = '") + 9 :]
-        video_hash = video_hash[: video_hash.find("'")]
-        video_id = hash_container[hash_container.find(".id = '") + 7 :]
-        video_id = video_id[: video_id.find("'")]
-
-        skip_segments = self._get_skip_segments(hash_container)
+        skip_segments = self._get_skip_segments(data)
 
         link_data, max_quality, tiles_config = self._get_link_with_data(video_type, video_hash, video_id, urlParams, script_url)
 
@@ -762,6 +781,30 @@ class KodikParser:
         download_url = download_url[: download_url.rfind("/") + 1]
         tiles_config["skip_segments"] = skip_segments
         return download_url, max_quality, tiles_config
+
+    def _extract_video_info(self, html: str, soup: Soup) -> tuple[str, str, str, str]:
+        """
+        Извлекает (script_url, video_type, video_hash, video_id) со страницы плеера.
+        Сначала через регулярки (быстро и не зависит от порядка тегов <script>),
+        при неудаче - старым способом через BeautifulSoup.
+        """
+        m_script = _RE_PLAYER_SCRIPT.search(html)
+        m_type = _RE_VINFO_TYPE.search(html)
+        m_hash = _RE_VINFO_HASH.search(html)
+        m_id = _RE_VINFO_ID.search(html)
+        if m_script and m_type and m_hash and m_id:
+            return m_script.group(1), m_type.group(1), m_hash.group(1), m_id.group(1)
+
+        # Fallback: исходная логика
+        script_url = soup.find_all("script")[1].get_attribute_list("src")[0]
+        hash_container = soup.find_all("script")[4].text
+        video_type = hash_container[hash_container.find(".type = '") + 9 :]
+        video_type = video_type[: video_type.find("'")]
+        video_hash = hash_container[hash_container.find(".hash = '") + 9 :]
+        video_hash = video_hash[: video_hash.find("'")]
+        video_id = hash_container[hash_container.find(".id = '") + 7 :]
+        video_id = video_id[: video_id.find("'")]
+        return script_url, video_type, video_hash, video_id
 
     def _get_skip_segments(self, hash_container: str) -> list[list[int]]:
         if "parseSkipButton(" not in hash_container:
@@ -813,13 +856,13 @@ class KodikParser:
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
         post_link = self._get_post_link(script_url)
-        data = requests.post(f"https://{self.player_domain}{post_link}", data=params, headers=headers, proxies=self.proxies)
+        data = self._post(f"https://{self.player_domain}{post_link}", data=params, headers=headers)
 
         # Если запрос не удался и мы использовали кэш — сбрасываем и пробуем заново
         if data.status_code != 200 and self.use_cache and script_url in self._cached_post_link:
             del self._cached_post_link[script_url]
             post_link = self._get_post_link(script_url)
-            data = requests.post(f"https://{self.player_domain}{post_link}", data=params, headers=headers, proxies=self.proxies)
+            data = self._post(f"https://{self.player_domain}{post_link}", data=params, headers=headers)
         try:
             data = data.json()
         except Exception as ex:
@@ -836,11 +879,7 @@ class KodikParser:
         url = data_url if "mp4:hls:manifest" in data_url else self._convert(data_url)
         
         if "/s/m/" in url:
-            print(
-                'Получена прокси-ссылка (/s/m/). Вероятнее всего ваш IP заблокирован кодиком. '
-                'Используйте параметр proxy при инициализации парсера: '
-                'KodikParserAsync(token="...", proxy="socks5://user:pass@host:port")'
-            )
+            warnings.warn(PROXY_LINK_WARNING, stacklevel=3)
 
         max_quality = max([int(x) for x in data["links"].keys()])
 
@@ -898,7 +937,7 @@ class KodikParser:
         selected_quality = str(min(quality, link_data[1]) if quality in [360, 480, 720] else link_data[1])
         
         link = "https:"+link_data[0]+selected_quality+".mp4:hls:manifest.m3u8"
-        data = requests.get(link)
+        data = self._get(link)
         if data.status_code == 404:
             raise errors.NoResults(f"Плейлист не найден. Попробуйте сменить качество.")
         elif data.status_code != 200:
@@ -956,7 +995,7 @@ class KodikParser:
 
         req_url = f"https://{self.player_domain}{script_url}" if not script_url.startswith(("http://", "https://")) else script_url
         req_url = self.normalize_player_url(req_url)
-        data = requests.get(req_url, proxies=self.proxies)
+        data = self._get(req_url)
         if data.status_code != 200:
             raise errors.ServiceError(f'Произошла ошибка при запросе. Ожидался код "200", получен: "{data.status_code}"')
         try:
@@ -1006,7 +1045,8 @@ class KodikParser:
             proxies = {"http": proxy, "https": proxy} if proxy else None
         else:
             proxies = self.proxies
-        data = requests.get(f'https://dumps.kodikres.com/calendar.json', proxies=proxies)
+        http = self.session if isinstance(self, KodikParser) else requests
+        data = http.get(f'https://dumps.kodikres.com/calendar.json', proxies=proxies)
         try:
             data = data.json()
         except Exception as ex:
@@ -1079,48 +1119,32 @@ class KodikParser:
             return decrypt_token(__gh_tokens['legacy'][0]["tokn"])
     
     def validate_token(self, print_info: bool = True) -> bool:
+        """
+        Проверяет доступность функций парсера с текущим токеном.
+        Используются только легковесные запросы к API (без загрузки страниц и скриптов плеера):
+        - search: base_search, base_search_by_id
+        - list: get_list
+        - get-player: get_embed_link (от него зависят get_info, get_link, get_m3u8_playlist и т.д.,
+          остальные запросы этих функций токен не используют)
+        """
         if self.TOKEN:
             res = True
-            try:
-                self.base_search("Кулинарные скитания", limit=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции base_search")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                self.base_search_by_id("53446", "shikimori", limit=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции base_search_by_id")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                self.get_info("53446", "shikimori")
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_info")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                self.get_list(limit_per_page=1, pages_to_parse=1, include_material_data=False)
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_list")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
-            try:
-                self.get_link("53446", "shikimori", 1, "610")
-            except errors.TokenError:
-                if print_info:
-                    print("[Token validation] Токен неверен для функции get_link")
-                res = False
-            except Exception as ex:
-                raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
+            checks = [
+                (("base_search",), lambda: self.base_search("Кулинарные скитания", limit=1, include_material_data=False)),
+                (("base_search_by_id",), lambda: self.base_search_by_id("53446", "shikimori", limit=1, include_material_data=False)),
+                (("get_info", "get_link"), lambda: self.get_embed_link("53446", "shikimori")),
+                (("get_list",), lambda: self.get_list(limit_per_page=1, pages_to_parse=1, include_material_data=False)),
+            ]
+            for func_names, check in checks:
+                try:
+                    check()
+                except errors.TokenError:
+                    if print_info:
+                        for name in func_names:
+                            print(f"[Token validation] Токен неверен для функции {name}")
+                    res = False
+                except Exception as ex:
+                    raise errors.UnexpectedBehavior(f"[Token validation] Произошла непредвиденная ошибка при валидации токена: {ex}")
             return res
         else:
             raise errors.TokenError(f"Для валидации токена он должен быть указан при инициализации или получен автоматически. Текущий токен: {self.TOKEN}")

@@ -174,10 +174,12 @@ class KodikDomainManager:
         now = time.time()
         if now - self._last_update < self._update_interval:
             return False
+        # Фиксируем попытку сразу: при недоступности сервиса не блокируем каждую инициализацию парсера
+        self._last_update = now
         try:
             import requests
             headers = {"User-Agent": "Kodik Replacer"}
-            resp = requests.get(self.REPLACE_API, headers=headers, proxies=proxies, timeout=5)
+            resp = requests.get(self.REPLACE_API, headers=headers, proxies=proxies, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
                 from_list = data.get("replace", {}).get("from", [])
@@ -200,6 +202,7 @@ class KodikDomainManager:
         now = time.time()
         if now - self._last_update < self._update_interval:
             return False
+        self._last_update = now
         try:
             data = None
             if async_session is not None:
@@ -208,7 +211,7 @@ class KodikDomainManager:
                     data = resp.json()
             elif CAN_WORK:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(self.REPLACE_API, headers={"User-Agent": "Kodik Replacer"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    async with session.get(self.REPLACE_API, headers={"User-Agent": "Kodik Replacer"}, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
             if data:
